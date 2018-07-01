@@ -1,6 +1,13 @@
 ﻿# -*- coding: utf-8 -*-
 __author__ = 'Vitaliy.Burkut'
-#  libs
+
+#################### version history ###########################################
+################################################################################
+# 0.1 Created
+# 0.2 Add dinamic count of partitioning files
+################################################################################
+
+###############################  libs  #########################################
 from datetime import datetime, timedelta
 import os
 from os.path import basename
@@ -152,24 +159,24 @@ def copy_date_to_old_file(p_orig_file_conn, p_old_file_conn, p_dist_file, p_key_
 
 
 
-def create_result_files(p_new_file_name, p_list_of_keys, p_max_index  = 10):
+def create_result_files(p_new_file_name, p_list_of_keys):
     nf_full_path = os.path.join(NEW_DIR, p_new_file_name)
     conections = []
 
     conections.append(open_access_conect(nf_full_path))
     logger.info("Opened connect to db file {0}".format(nf_full_path))
 
-    for i in range(1, p_max_index + 1):
-        logger.info("Start processing partition {0}".format(i))
+    for i in range(1, len(p_list_of_keys)):
+        logger.info("Start processing partition {0} of {1}".format(i, len (p_list_of_keys) - 1))
         fn = os.path.join(RES_DIR, "{0}-{1}.mdb".format(os.path.splitext(p_new_file_name)[0], str(i)))
         if not os.path.exists(fn):
             create_empty_file(fn)
             logger.info("New empty file was creted {0}".format(fn))
-            copy_date_to_new_file(conections[0], fn, p_list_of_keys[i])
+            copy_date_to_new_file(conections[0], fn, p_list_of_keys[i] + p_list_of_keys[0])
         else:
             logger.info("Old file found {0}".format(fn))
             conections.append(open_access_conect(fn))
-            copy_date_to_old_file(conections[0], conections[i], fn, p_list_of_keys[i])
+            copy_date_to_old_file(conections[0], conections[i], fn, p_list_of_keys[i]+ p_list_of_keys[0])
 
 
     return conections
@@ -210,19 +217,7 @@ def main(argv):
         logger.info('Check dirs exists')
         check_dirs()
 
-        #parser = OptionParser()
-        #parser.add_option("-s", "--send", action="store_true", dest="msg_send", default=False, help="send result mail msg, defoult show only")
 
-        #options, args = parser.parse_args()
-
-
-        #confFileName =  os.path.join(BASE_DIR, appName + ".conf")
-
-
-        #if os.path.isfile(confFileName):
-        #    with open(confFileName) as f:
-        #        q =f.readline().rstrip('\n')
-        #        w = f.readline().rstrip('\n')
 
 
         logger.info('Check new files exists...')
@@ -237,7 +232,7 @@ def main(argv):
  ## building the collection of key by datas in dispatch correspondance.csv
         logger.info('Start building key dictionary by data in file {0}'.format(DISPATCH_DICT_FILE))
         f = open(DISPATCH_DICT_FILE,'r')
-        lines = f.readlines()[2:]
+        lines = f.readlines()[1:]
         f.close()
         list_of_keys = []
 
@@ -245,12 +240,13 @@ def main(argv):
 
         for l in lines:
             k,v = l.split(';')
-
+            # if index (k) = 0 it is mean that records must be add to any file
             if int(v) > len(list_of_keys) - 1:
                 while int(v) > len(list_of_keys) -1:
-                    list_of_keys.append (['Flop_Tur']) ## Flop_Tur prefix add to all lists
+                    list_of_keys.append ([]) ## init as empty list
             if k not in list_of_keys[int(v)]:
                 list_of_keys[int(v)].append(k)
+
         logger.info('End building key dictionary')
 
         all_conn = []
