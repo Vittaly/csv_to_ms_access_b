@@ -16,6 +16,7 @@ import time
 import logging
 
 import pyodbc
+import dbf
 
 from shutil import copyfile, move
 import csv
@@ -31,6 +32,7 @@ NEW_DIR  = os.path.join(BASE_DIR, "new")
 RES_DIR = os.path.join(BASE_DIR, "results")
 OLD_DIR  = os.path.join(BASE_DIR, "proccesed")
 BAD_DIR  = os.path.join(BASE_DIR, "bad")
+TEMP_DIR  = os.path.join(BASE_DIR, "temp")
 EMPTY_DB_FULL_FN = os.path.join(BASE_DIR, "empty_db_for_copy.mdb")
 DISPATCH_DICT_FILE =  os.path.join(BASE_DIR, "dispatch correspondance.csv")
 
@@ -53,7 +55,7 @@ def create_empty_file_connect(p_full_file_name):
 
 
 def create_table(p_connect):
-    p_connect.execute ("create table table1 (id VARCHAR(20), Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
+    p_connect.execute ("create table table1 (id VARCHAR(20) PRIMARY KEY, Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
     p_connect.commit()
 
 def table_struct_isCorrect(p_conn):
@@ -70,13 +72,31 @@ def table_struct_isCorrect(p_conn):
             return True
     p_old_file_conn.commit();
 
-def write_rec_to_db(p_conn, p_records):
-    cur =  p_conn.cursor()
+def write_rec_to_mdb(p_conn, p_dbf_tab_name):
 
-    #cur.executemany('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', [rec + [None for i in range(7 - len(rec))]  for rec in p_records])
-    for rec in p_records:
-        cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', rec + [None for i in range(7 - len(rec))])
+    try:
+        p_conn.execute('insert into table1 select * from {0} in "{1}"[dBase IV;];'.format(p_dbf_tab_name, TEMP_DIR))
+    except pyodbc.ProgrammingError as pe:
+        logger.error('Error then was insert into TABLE1: {0}'.format(pe))
+
+    #for rec in p_records:
+    #    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', rec + [None for i in range(7 - len(rec))])
     p_conn.commit()
+
+def write_rec_to_dbf(p_records, p_dbf_tab_name):
+    dbf_file_name =  os.path.join(TEMP_DIR,  p_dbf_tab_name)
+    dbf_table = dbf.Table(dbf_file_name, 'ID C(20); Valeur1 C(20); Valeur2 C(20); Valeur3 C(20); Valeur4 C(20); Valeur5 C(20); Valeur6 C(20)')
+    logger.debug('temp dbf table created')
+    dbf_table.open(mode=dbf.READ_WRITE)
+    logger.debug('temp dbf table opened')
+
+    for rec in p_records:
+        dbf_table.append(tuple(rec))
+
+    logger.debug('temp dbf table contain {0} records'.format( len(dbf_table)))
+    dbf_table.close()
+    logger.debug('temp dbf table closed')
+
 
 
 def access_writer(p_csv_file_name, p_file_index, p_queue):
@@ -95,6 +115,9 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             logger.info("Struct or data in file {0} is incorrect. Abort".format(fn))
             conn.close()
             return -1
+    conn.autocommit = False
+    dbf_tab_name = 't' + str(p_file_index)
+
 
     while True:
         recs_part = None
@@ -107,13 +130,14 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
                 return
             else:
                 logger.debug("Recived {0} records for save into {1}".format(len(recs_part), fn))
-                write_rec_to_db(conn, recs_part)
+                write_rec_to_dbf(recs_part, dbf_tab_name)
+                write_rec_to_mdb(conn, dbf_tab_name)
                 p_queue.task_done()
                 logger.debug("Task done")
 
         else:
             logger.debug("queue is empty. Sleep".format(p_file_index))
-            time.sleep(2)
+            time.sleep(10)
 
 
 def csv_file_isCorrect(p_csv_file_name):
@@ -142,7 +166,7 @@ def csv_file_isCorrect(p_csv_file_name):
 
 
 def check_dirs():
-    for dn in [NEW_DIR, RES_DIR, OLD_DIR, BAD_DIR]:
+    for dn in [NEW_DIR, RES_DIR, OLD_DIR, BAD_DIR, TEMP_DIR]:
         if not os.path.exists(dn):
             os.makedirs(dn)
 
@@ -162,13 +186,14 @@ def get_tab_rec(p_csv_rec):
 
 
 def process_csv_file(p_csv_file_name):
-    PART_SIZE = 3000
+    PART_SIZE = 50000
+    QUEUE_SIZE = 10
     csv_full_name = os.path.join(NEW_DIR, p_csv_file_name)
     max_file_index = len(DICT_OF_KEYS) - 1
     fd = open(csv_full_name, 'r')
     csv_reader = csv.reader(fd)
     rec_dict = [[] for i in range(max_file_index)]
-    queues = [Queue() for i in range(max_file_index)]
+    queues = [Queue(QUEUE_SIZE) for i in range(max_file_index)]
     threads = [Thread(target = access_writer, name = 'thread for file {0}'.format(i+1), args = (p_csv_file_name, i+1, queues[i]), daemon = True) for i in range(max_file_index)]
     for rec in csv_reader:
         file_index = get_file_index_by_key(rec[0])
@@ -188,6 +213,11 @@ def process_csv_file(p_csv_file_name):
                     threads[file_index - 1] = None
                 #access_writer(p_csv_file_name, file_index, queues[file_index -1])
                 rec_dict[file_index - 1] = []
+    for i in range(1, max_file_index+1):
+        if len(rec_dict[file_index - 1]) > 0:
+            queues[file_index - 1].put(rec_dict[file_index - 1])
+        queues[file_index - 1].put([]) # empty list is flag for thread that job is done
+
     for q in queues:
         q.put([]) # put the empty list for stop thread
         q.join() # wait to stop
