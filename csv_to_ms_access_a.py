@@ -186,8 +186,8 @@ def get_tab_rec(p_csv_rec):
 
 
 def process_csv_file(p_csv_file_name):
-    PART_SIZE = 50000
-    QUEUE_SIZE = 10
+    PART_SIZE = 10000
+    QUEUE_SIZE = 3
     csv_full_name = os.path.join(NEW_DIR, p_csv_file_name)
     max_file_index = len(DICT_OF_KEYS) - 1
     fd = open(csv_full_name, 'r')
