@@ -16,7 +16,7 @@ import time
 import logging
 
 import pyodbc
-import dbf
+#import dbf
 
 from shutil import copyfile, move
 import csv
@@ -55,8 +55,9 @@ def create_empty_file_connect(p_full_file_name):
 
 
 def create_table(p_connect):
-    p_connect.execute ("create table table1 (id VARCHAR(20) PRIMARY KEY, Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
+    p_connect.execute ("create table table1 (id VARCHAR(20), Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
     p_connect.commit()
+    #PRIMARY KEY
 
 def table_struct_isCorrect(p_conn):
     try:
@@ -74,24 +75,23 @@ def table_struct_isCorrect(p_conn):
 
     p_old_file_conn.commit();
 
-def write_rec_to_mdb(p_conn, p_dbf_tab_name):
+def write_rec_to_mdb(p_conn, p_tmp_tab_name):
 
     try:
-        p_conn.execute('insert into table1 select * from {0} in "{1}"[dBase IV;];'.format(p_dbf_tab_name, TEMP_DIR))
+        p_conn.execute('insert into table1 select * from {0} in "{1}"[Txt;];'.format(p_tmp_tab_name, TEMP_DIR))
     except pyodbc.ProgrammingError as pe:
         logger.error('Error then was insert into TABLE1: {0}'.format(pe))
 
     #for rec in p_records:
     #    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', rec + [None for i in range(7 - len(rec))])
     p_conn.commit()
-    logger.info("data from dbf moved to mdb")
+    logger.info("data from tmp table moved to mdb")
 
 
-def write_rec_to_dbf(p_records, p_dbf_tab):
-    logger.debug('start write to dbf')
-    for rec in p_records:
-        p_dbf_tab.append(rec)
-    logger.debug('temp dbf table contain {0} records'.format( len(p_dbf_tab)))
+def write_rec_to_tmp_db(p_records, p_tmp_tab):
+    logger.debug('start write to tmp tables')
+    p_tmp_tab.writerows(p_records)
+    logger.debug('end write to tmp tables')
 
 
 
@@ -113,15 +113,15 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             conn.close()
             return -1
     conn.autocommit = False
-    dbf_tab_name = 't' + str(p_file_index)
+    tmp_tab_name = 't' + str(p_file_index)
 
-    dbf_file_name =  os.path.join(TEMP_DIR,  dbf_tab_name)
-    dbf_table = dbf.Table(dbf_file_name, 'ID C(20); Valeur1 C(20); Valeur2 C(20); Valeur3 C(20); Valeur4 C(20); Valeur5 C(20); Valeur6 C(20)')
-    logger.debug('temp dbf table created')
-    dbf_table.open(mode=dbf.READ_WRITE)
-    logger.debug('temp dbf table opened')
+    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_tab_name + '.csv')
+    tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
+    tmp_table =  csv.writer (tmp_tab_file)
+    tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
 
     was_sleeped = False
+    record_was_writed = False
 
     while True:
         recs_part = None
@@ -130,29 +130,31 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             was_sleeped = False
             if len(recs_part) == 0:
                 logger.debug("Recived 0 records. Finalize")
-                dbf_table.close()
-                logger.debug('temp dbf table closed')
-                write_rec_to_mdb(conn, dbf_tab_name)
+                tmp_tab_file.close()
+                logger.debug('temp table closed')
+                write_rec_to_mdb(conn, tmp_tab_name)
                 p_queue.task_done()
                 conn.close()
                 return
             else:
                 logger.debug("Recived {0} records for save into {1}".format(len(recs_part), fn))
-                write_rec_to_dbf(recs_part, dbf_table)
+                write_rec_to_tmp_db(recs_part, tmp_table)
+                record_was_writed = True
                 p_queue.task_done()
                 logger.debug("Steep of task done")
 
         else:
             logger.debug("queue is empty")
-            if len(dbf_table) > 0:
-                logger.debug("dbf is not empt ({0} rows). Will write to mdb".format(len(dbf_table)))
-                dbf_table.close()
-                write_rec_to_mdb(conn, dbf_tab_name)
-                logger.debug("recreate dbf for clear after write into mdb")
-                dbf_table = dbf.Table(dbf_file_name, 'ID C(20); Valeur1 C(20); Valeur2 C(20); Valeur3 C(20); Valeur4 C(20); Valeur5 C(20); Valeur6 C(20)')
-                logger.debug("dbf recreated")
-                dbf_table.open(mode=dbf.READ_WRITE)
-                logger.debug('dbf table reopened')
+            if record_was_writed:
+                logger.debug("temt table is not empty. Will write to mdb")
+                tmp_tab_file.close()
+                write_rec_to_mdb(conn, tmp_tab_name)
+                logger.debug("clear temp table after write into mdb")
+                tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
+                tmp_table =  csv.writer (tmp_tab_file)
+                tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
+                logger.debug("tmp db recreated")
+                record_was_writed = False
                 continue
             else:
                 logger.debug('sleep')
