@@ -61,15 +61,17 @@ def create_table(p_connect):
 def table_struct_isCorrect(p_conn):
     try:
         p_conn.execute('alter table table1 ADD PRIMARY KEY (ID);')
-    except pyodbc.ProgrammingError as pe:
-        if pe.args[0] != "42S02":
-            return False
-        elif pe.args[0] != "42S02":
+    except Exception as pe:
+        if pe.args[0] == "42S02":
            logger.error('Table TABLE1 not exists in DB file')
            return False
         elif type(pe) == pyodbc.Error and  pe.args[0] == "HY000":
             logger.info("PK is already exists. Error:{0}".format(pe.args[1]))
             return True
+        else:
+            logger.Error(" Error:{0}".format(pe.args[1]))
+            return False
+
     p_old_file_conn.commit();
 
 def write_rec_to_mdb(p_conn, p_dbf_tab_name):
@@ -82,20 +84,15 @@ def write_rec_to_mdb(p_conn, p_dbf_tab_name):
     #for rec in p_records:
     #    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', rec + [None for i in range(7 - len(rec))])
     p_conn.commit()
+    logger.info("data from dbf moved to mdb")
 
-def write_rec_to_dbf(p_records, p_dbf_tab_name):
-    dbf_file_name =  os.path.join(TEMP_DIR,  p_dbf_tab_name)
-    dbf_table = dbf.Table(dbf_file_name, 'ID C(20); Valeur1 C(20); Valeur2 C(20); Valeur3 C(20); Valeur4 C(20); Valeur5 C(20); Valeur6 C(20)')
-    logger.debug('temp dbf table created')
-    dbf_table.open(mode=dbf.READ_WRITE)
-    logger.debug('temp dbf table opened')
 
+def write_rec_to_dbf(p_records, p_dbf_tab):
+    logger.debug('start write to dbf')
     for rec in p_records:
-        dbf_table.append(tuple(rec))
+        p_dbf_tab.append(rec)
+    logger.debug('temp dbf table contain {0} records'.format( len(p_dbf_tab)))
 
-    logger.debug('temp dbf table contain {0} records'.format( len(dbf_table)))
-    dbf_table.close()
-    logger.debug('temp dbf table closed')
 
 
 
@@ -118,26 +115,49 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
     conn.autocommit = False
     dbf_tab_name = 't' + str(p_file_index)
 
+    dbf_file_name =  os.path.join(TEMP_DIR,  dbf_tab_name)
+    dbf_table = dbf.Table(dbf_file_name, 'ID C(20); Valeur1 C(20); Valeur2 C(20); Valeur3 C(20); Valeur4 C(20); Valeur5 C(20); Valeur6 C(20)')
+    logger.debug('temp dbf table created')
+    dbf_table.open(mode=dbf.READ_WRITE)
+    logger.debug('temp dbf table opened')
+
+    was_sleeped = False
 
     while True:
         recs_part = None
-        if not p_queue.empty():
+        if not p_queue.empty() or was_sleeped:
             recs_part = p_queue.get()
+            was_sleeped = False
             if len(recs_part) == 0:
-                logger.debug("Recived 0 records. Exit")
+                logger.debug("Recived 0 records. Finalize")
+                dbf_table.close()
+                logger.debug('temp dbf table closed')
+                write_rec_to_mdb(conn, dbf_tab_name)
                 p_queue.task_done()
                 conn.close()
                 return
             else:
                 logger.debug("Recived {0} records for save into {1}".format(len(recs_part), fn))
-                write_rec_to_dbf(recs_part, dbf_tab_name)
-                write_rec_to_mdb(conn, dbf_tab_name)
+                write_rec_to_dbf(recs_part, dbf_table)
                 p_queue.task_done()
-                logger.debug("Task done")
+                logger.debug("Steep of task done")
 
         else:
-            logger.debug("queue is empty. Sleep".format(p_file_index))
-            time.sleep(10)
+            logger.debug("queue is empty")
+            if len(dbf_table) > 0:
+                logger.debug("dbf is not empt ({0} rows). Will write to mdb".format(len(dbf_table)))
+                dbf_table.close()
+                write_rec_to_mdb(conn, dbf_tab_name)
+                logger.debug("recreate dbf for clear after write into mdb")
+                dbf_table = dbf.Table(dbf_file_name, 'ID C(20); Valeur1 C(20); Valeur2 C(20); Valeur3 C(20); Valeur4 C(20); Valeur5 C(20); Valeur6 C(20)')
+                logger.debug("dbf recreated")
+                dbf_table.open(mode=dbf.READ_WRITE)
+                logger.debug('dbf table reopened')
+                continue
+            else:
+                logger.debug('sleep')
+                time.sleep(10)
+                was_sleeped = True
 
 
 def csv_file_isCorrect(p_csv_file_name):
@@ -180,14 +200,13 @@ def get_file_index_by_key(p_key):
             return i
 
 def get_tab_rec(p_csv_rec):
-    res =  ['_'.join([p_csv_rec[0], p_csv_rec[1], p_csv_rec[2]])]
-    res.extend([ f.replace('.', '') for f in p_csv_rec[7:len(p_csv_rec)-1]])
+    res =  ('_'.join([p_csv_rec[0], p_csv_rec[1], p_csv_rec[2]]),) + tuple(f.replace('.', '') for f in p_csv_rec[7:len(p_csv_rec)-1])
     return res
 
 
 def process_csv_file(p_csv_file_name):
-    PART_SIZE = 10000
-    QUEUE_SIZE = 3
+    PART_SIZE = 20000
+    QUEUE_SIZE = 1
     csv_full_name = os.path.join(NEW_DIR, p_csv_file_name)
     max_file_index = len(DICT_OF_KEYS) - 1
     fd = open(csv_full_name, 'r')
@@ -195,6 +214,8 @@ def process_csv_file(p_csv_file_name):
     rec_dict = [[] for i in range(max_file_index)]
     queues = [Queue(QUEUE_SIZE) for i in range(max_file_index)]
     threads = [Thread(target = access_writer, name = 'thread for file {0}'.format(i+1), args = (p_csv_file_name, i+1, queues[i]), daemon = True) for i in range(max_file_index)]
+    for t in threads:
+        t.start()
     for rec in csv_reader:
         file_index = get_file_index_by_key(rec[0])
         if file_index == None:
@@ -208,17 +229,17 @@ def process_csv_file(p_csv_file_name):
             if len(rec_dict[file_index - 1]) == PART_SIZE:
                 logger.debug('Put to queue {0} records for file #{1}'.format(len(rec_dict[file_index - 1]), file_index))
                 queues[file_index - 1].put(rec_dict[file_index - 1])
-                if threads[file_index - 1] != None:
-                    threads[file_index - 1].start()
-                    threads[file_index - 1] = None
                 #access_writer(p_csv_file_name, file_index, queues[file_index -1])
                 rec_dict[file_index - 1] = []
     for i in range(1, max_file_index+1):
         if len(rec_dict[file_index - 1]) > 0:
+            logger.debug('Put to queue {0} last part of records for file #{1}'.format(len(rec_dict[i - 1]), i))
             queues[file_index - 1].put(rec_dict[file_index - 1])
-        queues[file_index - 1].put([]) # empty list is flag for thread that job is done
+            rec_dict[file_index - 1] = []
 
-    for q in queues:
+
+    for i, q in enumerate (queues):
+        logger.debug('Put to queue empty list to stop for file #{0}'.format(i+1))
         q.put([]) # put the empty list for stop thread
         q.join() # wait to stop
 
