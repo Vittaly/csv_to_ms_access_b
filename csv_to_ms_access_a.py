@@ -3,7 +3,9 @@ __author__ = 'Vitaliy.Burkut'
 
 #################### version history ###########################################
 ################################################################################
-# 0.1 Created
+# 0.1 Created       (very slow)
+# 0.2 try with dbf (slow)
+# 0.3 try withh direct csv read from access (fast)
 ################################################################################
 
 ###############################  libs  #########################################
@@ -77,8 +79,10 @@ def table_struct_isCorrect(p_conn):
 
 def write_rec_to_mdb(p_conn, p_tmp_tab_name):
 
+    cmd = 'insert into table1 select * from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name, TEMP_DIR)
+    logger.debug('exeecute:{0}'.format(cmd))
     try:
-        p_conn.execute('insert into table1 select * from {0} in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name, TEMP_DIR))
+        p_conn.execute(cmd)
     except pyodbc.ProgrammingError as pe:
         logger.error('Error then was insert into TABLE1: {0}'.format(pe))
 
@@ -113,9 +117,9 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             conn.close()
             return -1
     conn.autocommit = False
-    tmp_tab_name = 't' + str(p_file_index)
+    tmp_tab_name = 't' + str(p_file_index) + '.csv'
 
-    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_tab_name + '.csv')
+    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_tab_name )
     tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
     tmp_table =  csv.writer (tmp_tab_file)
     tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
@@ -207,8 +211,8 @@ def get_tab_rec(p_csv_rec):
 
 
 def process_csv_file(p_csv_file_name):
-    PART_SIZE = 20000
-    QUEUE_SIZE = 1
+    PART_SIZE = 30000
+    QUEUE_SIZE = 10
     csv_full_name = os.path.join(NEW_DIR, p_csv_file_name)
     max_file_index = len(DICT_OF_KEYS) - 1
     fd = open(csv_full_name, 'r')
