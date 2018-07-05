@@ -78,7 +78,7 @@ def table_struct_isCorrect(p_conn):
 def write_rec_to_mdb(p_conn, p_tmp_tab_name):
 
     try:
-        p_conn.execute('insert into table1 select * from {0} in "{1}"[Txt;];'.format(p_tmp_tab_name, TEMP_DIR))
+        p_conn.execute('insert into table1 select * from {0} in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name, TEMP_DIR))
     except pyodbc.ProgrammingError as pe:
         logger.error('Error then was insert into TABLE1: {0}'.format(pe))
 
