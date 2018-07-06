@@ -67,7 +67,7 @@ def create_tmp_table(p_connect):
         logger.warn("Error when tried drop tmp table:{0}".format(e.args[1]))
 
     try:
-        p_connect.execute ("create table tmp (id VARCHAR(20), Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
+        p_connect.execute ("create table tmp (id VARCHAR(20), Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20), pk AUTOINCREMENT PRIMARY KEY);")
     except Exception as e:
         if e.args[0] == '42S01':
             logger.warn("table TMP is already exists. Error:{0}".format(e.args[1]))
@@ -113,13 +113,10 @@ def merga_data_in_mdb(p_conn):
         logger.info('Duplicate IDs in additional rows not found')
     else:
         logger.warn('Duplicate IDs in additional rows was found')
-        cur.execute('alter table tmp add column pk AUTOINCREMENT PRIMARY KEY;')
         for r in val:
             logger.warn('Duplicated id in new data: id:{0} count:{1}'.format(r[0], r[1]))
             logger.warn('Deleting...')
             cur.execute('delete from tmp where id = ? and pk not in (select min(pk) from tmp tt where tt.id = ?);', r[0], r[0])
-
-
         p_conn.commit()
 
 
@@ -145,7 +142,7 @@ def merga_data_in_mdb(p_conn):
 
 def write_rec_to_mdb(p_conn, p_tmp_tab_name):
 
-    cmd = 'insert into tmp select * from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name, TEMP_DIR)
+    cmd = 'insert into tmp (id, Valeur1, Valeur2, Valeur3, Valeur4, Valeur5, Valeur6) select id, Valeur1, Valeur2, Valeur3, Valeur4, Valeur5, Valeur6  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name, TEMP_DIR)
     logger.debug('exeecute:{0}'.format(cmd))
     try:
         p_conn.execute(cmd)
@@ -206,7 +203,18 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
                 tmp_tab_file.close()
                 logger.debug('temp csv file closed')
                 write_rec_to_mdb(conn, tmp_tab_name)
-                merga_data_in_mdb(conn)
+                try:
+                    merga_data_in_mdb(conn)
+                except Exception as e:
+                    logger.error(e)
+                    logger.warn('Try again call merga_data_in_mdb')
+                    try:
+                        merga_data_in_mdb(conn)
+                    except Exception as ee:
+                        logger.error('Second error in merga_data_in_mdb:{0}'.format(ee))
+                        return -1
+
+
                 p_queue.task_done()
                 conn.close()
                 return
