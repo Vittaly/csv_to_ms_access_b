@@ -319,7 +319,7 @@ def process_csv_file(p_csv_file_name):
                 logger.debug('Put to queue {0} records for file #{1}'.format(len(rec_dict[file_index - 1]), file_index))
                 queues[file_index - 1].put(rec_dict[file_index - 1])
                 #access_writer(p_csv_file_name, file_index, queues[file_index -1])
-                row_count_per_file[file_index - 1] = +len(rec_dict[file_index - 1])
+                row_count_per_file[file_index - 1] += len(rec_dict[file_index - 1])
                 rec_dict[file_index - 1] = []
         row_count  += 1
 
