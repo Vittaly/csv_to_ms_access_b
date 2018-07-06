@@ -250,7 +250,7 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             if not wasDupl:  # if not contains problem, delete csv file
                 fn =  os.path.join(TEMP_DIR,  queue_msg[0])
                 logger.debug('delete file {0}'.format(fn))
-                os.remove(fn)
+               # os.remove(fn)
             p_queue.task_done()
 
 
