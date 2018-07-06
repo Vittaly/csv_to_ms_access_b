@@ -172,21 +172,8 @@ def write_to_mdb(p_conn, p_tmp_tab_name):
                         logger.error('Found PK duplicated for ID "{0}". Row ignored'.format(rec[0]))
                     else:
                         raise
-    return HasDuplicate
-
-
-
-
-
-    #for rec in p_records:
-    #    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', rec + [None for i in range(7 - len(rec))])
     p_conn.commit()
-
-##    cur.execute('select count(*) from table1')
-##    rows_after = cur.fetchone()[0]
-##
-##    logger.info("{0} was added to mdb table".format(rows_after - rows_before))
-##    return rows_after - rows_before
+    return HasDuplicate
 
 
 def write_rec_to_tmp_db(p_records, p_tmp_tab):
@@ -220,10 +207,10 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
     row_processed = 0
 
     conn.autocommit = False
-
+    logger.debug("Start reading queue")
     while True:
         #recs_part = None
-        logger.debug("Start reading queue")
+
         queue_msg = p_queue.get()
         if ProblemDetected:
             logger.info("Problem was detected earler. Thread do nothing")
@@ -250,7 +237,7 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             if not wasDupl:  # if not contains problem, delete csv file
                 fn =  os.path.join(TEMP_DIR,  queue_msg[0])
                 logger.debug('delete file {0}'.format(fn))
-               # os.remove(fn)
+                os.remove(fn)
             p_queue.task_done()
 
 
