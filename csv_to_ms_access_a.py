@@ -96,6 +96,7 @@ def table_struct_isCorrect(p_conn):
     p_conn.commit();
     logger.warn('PK was not exists. Created')
     return True
+<<<<<<< HEAD
 
 def get_table_rec_count(p_con):
     cur = p_con.cursor()
@@ -147,6 +148,59 @@ def write_to_mdb(p_conn, p_tmp_tab_name):
 
     cur = p_conn.cursor()
 
+=======
+
+def get_table_rec_count(p_con):
+    cur = p_con.cursor()
+    res = cur.execute('select count(*) from table1')
+    return res.fetchone()[0]
+def merga_data_in_mdb(p_conn):
+    cur = p_conn.cursor()
+    res = cur.execute('select count(*) from table1;')
+    val = res.fetchone()
+    old_row_count = val[0]
+    logger.info('Rows count in table1 before merge: {0}'.format(val[0]))
+    res = cur.execute('select count(*) from tmp;')
+    val = res.fetchone()
+    logger.info('Rows count in temp table before merge: {0}'.format(val[0]))
+    res = cur.execute('select id, count(*) from tmp group by id having count(*) > 1;')
+    val = res.fetchall()
+    if val == None:
+        logger.info('Duplicate IDs in additional rows not found')
+    else:
+        logger.warn('Duplicate IDs in additional rows was found')
+        for r in val:
+            logger.warn('Duplicated id in new data: id:{0} count:{1}'.format(r[0], r[1]))
+            logger.warn('Deleting...')
+            cur.execute('delete from tmp where id = ? and pk not in (select min(pk) from tmp tt where tt.id = ?);', r[0], r[0])
+        p_conn.commit()
+
+
+    cur.execute('select id from tmp t where t.id in (select id from table1);')
+
+    for r in cur:
+        logger.warn('In new data was found id that already exists in table1: {0}'.format(r.id))
+    cur.execute('insert into table1 select id, Valeur1, Valeur2, Valeur3, Valeur4, Valeur5, Valeur6  from tmp t where t.id not in (select id from table1);')
+    p_conn.commit()
+    res = cur.execute('select count(*) from table1;')
+    val = res.fetchone()
+    new_row_count = val[0]
+    logger.info('Rows count in table1 after merge: {0}. {1} rows has added'.format(new_row_count, new_row_count - old_row_count))
+    p_conn.execute('drop table tmp;')
+    p_conn.commit()
+
+
+
+
+
+
+
+
+def write_to_mdb(p_conn, p_tmp_tab_name):
+
+    cur = p_conn.cursor()
+
+>>>>>>> fcd35dd9a5df9b689df57816daabbd78e3ddd3ea
     HasDuplicate  = False
 
     ##cmd = 'insert into table1 select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES] where id not in (select id from table1);'.format(p_tmp_tab_name , TEMP_DIR)
@@ -203,6 +257,7 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             logger.error("Struct or data in file {0} is incorrect. Abort".format(fn))
             conn.close()
             ProblemDetected = True
+<<<<<<< HEAD
     try:
         RowCountOnStart = get_table_rec_count(conn)
     except Exception as e:
@@ -254,6 +309,48 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
 
 
 
+=======
+    RowCountOnStart = get_table_rec_count(conn)
+    row_processed = 0
+
+    conn.autocommit = False
+    logger.debug("Start reading queue")
+    while True:
+        #recs_part = None
+
+        queue_msg = p_queue.get()
+        if ProblemDetected:
+            logger.info("Problem was detected earler. Thread do nothing")
+            continue
+        elif queue_msg[0] == 'NO_MORE_REC':
+
+            logger.debug("Recived msg NO_MORE_REC. Finalize")
+            RowCountOnEnd = get_table_rec_count(conn)
+            logger.info ("Analitics: rows before start {0}".format(RowCountOnStart))
+            logger.info ("Analitics: rows after finish {0}".format(RowCountOnEnd))
+            logger.info ("Analitics: Total the thread has added {0} rows".format(RowCountOnEnd - RowCountOnStart))
+            p_queue.task_done()
+            conn.close()
+            return
+        else:
+            wasDupl = False
+            logger.info('received info about new part csv file {0} with {1} records'.format(queue_msg[0], queue_msg[1]))
+            logger.info('add data from {0} to mdb part #{1}'.format(queue_msg[0], p_file_index))
+            try:
+               wasDupl = write_to_mdb(conn, queue_msg[0])
+            except Exception as e:
+                logger.error(e)
+                ProblemDetected = True
+            if not wasDupl:  # if not contains problem, delete csv file
+                fn =  os.path.join(TEMP_DIR,  queue_msg[0])
+                logger.debug('delete file {0}'.format(fn))
+                os.remove(fn)
+            p_queue.task_done()
+
+
+
+
+>>>>>>> fcd35dd9a5df9b689df57816daabbd78e3ddd3ea
 
 
 def csv_file_isCorrect(p_csv_file_name):
