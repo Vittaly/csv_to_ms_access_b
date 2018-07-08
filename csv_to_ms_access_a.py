@@ -203,7 +203,12 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             logger.error("Struct or data in file {0} is incorrect. Abort".format(fn))
             conn.close()
             ProblemDetected = True
-    RowCountOnStart = get_table_rec_count(conn)
+        try:
+            RowCountOnStart = get_table_rec_count(conn)
+        except Exception as e:
+            RowCountOnStart = -1
+            logger.warn ("Analitics:Error when tryed calc row count in file {0}: {0}".format(RowCountOnEnd))
+
     row_processed = 0
 
     conn.autocommit = False
@@ -218,10 +223,17 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
         elif queue_msg[0] == 'NO_MORE_REC':
 
             logger.debug("Recived msg NO_MORE_REC. Finalize")
-            RowCountOnEnd = get_table_rec_count(conn)
-            logger.info ("Analitics: rows before start {0}".format(RowCountOnStart))
-            logger.info ("Analitics: rows after finish {0}".format(RowCountOnEnd))
-            logger.info ("Analitics: Total the thread has added {0} rows".format(RowCountOnEnd - RowCountOnStart))
+
+            if RowCountOnStart > 0:
+                logger.info ("Analitics: rows before start {0}".format(RowCountOnStart))
+            try:
+                RowCountOnEnd = get_table_rec_count(conn)
+            except Exception as e:
+                RowCountOnEnd = -1
+                logger.warn ("Analitics:Error when tryed calc row count in file {0}: {0}".format(RowCountOnEnd))
+            if RowCountOnEnd > 0:
+                logger.info ("Analitics: rows after finish {0}".format(RowCountOnEnd))
+                logger.info ("Analitics: Total the thread has added {0} rows".format(RowCountOnEnd - RowCountOnStart))
             p_queue.task_done()
             conn.close()
             return
