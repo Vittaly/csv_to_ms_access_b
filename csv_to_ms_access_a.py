@@ -57,9 +57,27 @@ def create_empty_file_connect(p_full_file_name):
 
 
 def create_table(p_connect):
-    p_connect.execute ("create table table1 (id VARCHAR(20), Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
+    p_connect.execute ("create table table1 (id VARCHAR(20) PRIMARY KEY, Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20));")
     p_connect.commit()
     #PRIMARY KEY
+def create_tmp_table(p_connect):
+    try:
+        p_connect.execute ("drop table tmp;")
+    except Exception as e:
+        logger.warn("Error when tried drop tmp table:{0}".format(e.args[1]))
+
+    try:
+        p_connect.execute ("create table tmp (id VARCHAR(20), Valeur1 VARCHAR(20), Valeur2 VARCHAR(20), Valeur3 VARCHAR(20), Valeur4 VARCHAR(20), Valeur5 VARCHAR(20), Valeur6 VARCHAR(20), pk AUTOINCREMENT PRIMARY KEY);")
+    except Exception as e:
+        if e.args[0] == '42S01':
+            logger.warn("table TMP is already exists. Error:{0}".format(e.args[1]))
+
+    try:
+        p_connect.execute ("create index tmp_id_idx on tmp (id);")
+    except Exception as e:
+        if e.args[0] == 'HYS011':
+            logger.warn("index tmp_id_idx is already exists. Error:{0}".format(e.args[1]))
+    p_connect.commit()
 
 def table_struct_isCorrect(p_conn):
     try:
@@ -75,21 +93,87 @@ def table_struct_isCorrect(p_conn):
             logger.Error(" Error:{0}".format(pe.args[1]))
             return False
 
-    p_old_file_conn.commit();
+    p_conn.commit();
+    logger.warn('PK was not exists. Created')
+    return True
 
-def write_rec_to_mdb(p_conn, p_tmp_tab_name):
+def get_table_rec_count(p_con):
+    cur = p_con.cursor()
+    res = cur.execute('select count(*) from table1')
+    return res.fetchone()[0]
+def merga_data_in_mdb(p_conn):
+    cur = p_conn.cursor()
+    res = cur.execute('select count(*) from table1;')
+    val = res.fetchone()
+    old_row_count = val[0]
+    logger.info('Rows count in table1 before merge: {0}'.format(val[0]))
+    res = cur.execute('select count(*) from tmp;')
+    val = res.fetchone()
+    logger.info('Rows count in temp table before merge: {0}'.format(val[0]))
+    res = cur.execute('select id, count(*) from tmp group by id having count(*) > 1;')
+    val = res.fetchall()
+    if val == None:
+        logger.info('Duplicate IDs in additional rows not found')
+    else:
+        logger.warn('Duplicate IDs in additional rows was found')
+        for r in val:
+            logger.warn('Duplicated id in new data: id:{0} count:{1}'.format(r[0], r[1]))
+            logger.warn('Deleting...')
+            cur.execute('delete from tmp where id = ? and pk not in (select min(pk) from tmp tt where tt.id = ?);', r[0], r[0])
+        p_conn.commit()
 
-    cmd = 'insert into table1 select * from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name, TEMP_DIR)
-    logger.debug('exeecute:{0}'.format(cmd))
-    try:
-        p_conn.execute(cmd)
-    except pyodbc.ProgrammingError as pe:
-        logger.error('Error then was insert into TABLE1: {0}'.format(pe))
 
-    #for rec in p_records:
-    #    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', rec + [None for i in range(7 - len(rec))])
+    cur.execute('select id from tmp t where t.id in (select id from table1);')
+
+    for r in cur:
+        logger.warn('In new data was found id that already exists in table1: {0}'.format(r.id))
+    cur.execute('insert into table1 select id, Valeur1, Valeur2, Valeur3, Valeur4, Valeur5, Valeur6  from tmp t where t.id not in (select id from table1);')
     p_conn.commit()
-    logger.info("data from tmp table moved to mdb")
+    res = cur.execute('select count(*) from table1;')
+    val = res.fetchone()
+    new_row_count = val[0]
+    logger.info('Rows count in table1 after merge: {0}. {1} rows has added'.format(new_row_count, new_row_count - old_row_count))
+    p_conn.execute('drop table tmp;')
+    p_conn.commit()
+
+
+
+
+
+
+
+
+def write_to_mdb(p_conn, p_tmp_tab_name):
+
+    cur = p_conn.cursor()
+
+    HasDuplicate  = False
+
+    ##cmd = 'insert into table1 select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES] where id not in (select id from table1);'.format(p_tmp_tab_name , TEMP_DIR)
+    cmd = 'insert into table1 select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name , TEMP_DIR)
+    logger.debug('exeecute:{0}'.format(cmd))
+
+    try:
+        cur.execute(cmd)
+    except pyodbc.IntegrityError as pe:
+        if pe.args[0] != '23000':
+            logger.error('Error then was insert into TABLE1: {0}'.format(pe))
+            raise
+        else:
+            HasDuplicate = True
+            logger.warn('Found PK duplicated in bulk insert. Try insert by single row')
+            cmd = ' select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name , TEMP_DIR)
+            rows =  cur.execute(cmd).fetchall()
+            for rec in rows:
+                try:
+                    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', [x for x in rec] + [None for i in range(7 - len(rec))])
+                except  pyodbc.IntegrityError as pe2:
+                    if pe2.args[0] == '23000':
+                        logger.error('Found PK duplicated for ID "{0}". Row ignored'.format(rec[0]))
+                    else:
+                        raise
+    p_conn.commit()
+    return HasDuplicate
 
 
 def write_rec_to_tmp_db(p_records, p_tmp_tab):
@@ -104,6 +188,9 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
     logger.info("Start thread by processing partition {0} of {1}".format(p_file_index, len (DICT_OF_KEYS) - 1))
     fn = os.path.join(RES_DIR, "{0}-{1}.mdb".format(os.path.splitext(p_csv_file_name)[0], p_file_index))
     conn = None
+    ProblemDetected = False
+    RowCountOnStart = 0
+
     if not os.path.exists(fn):
         conn = create_empty_file_connect(fn)
         logger.info("New empty file was creted {0}".format(fn))
@@ -113,57 +200,60 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
         conn =  open_access_conect(fn)
         logger.info("Connected. Check PK in TABLE1 from ")
         if not table_struct_isCorrect(conn):
-            logger.info("Struct or data in file {0} is incorrect. Abort".format(fn))
+            logger.error("Struct or data in file {0} is incorrect. Abort".format(fn))
             conn.close()
-            return -1
+            ProblemDetected = True
+    try:
+        RowCountOnStart = get_table_rec_count(conn)
+    except Exception as e:
+        RowCountOnStart = -1
+        logger.warn ("Analitics:Error when tryed calc row count in file {0}: {0}".format(RowCountOnEnd))
+
+    row_processed = 0
+
     conn.autocommit = False
-    tmp_tab_name = 't' + str(p_file_index) + '.csv'
-
-    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_tab_name )
-    tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
-    tmp_table =  csv.writer (tmp_tab_file)
-    tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
-
-    was_sleeped = False
-    record_was_writed = False
-
+    logger.debug("Start reading queue")
     while True:
-        recs_part = None
-        if not p_queue.empty() or was_sleeped:
-            recs_part = p_queue.get()
-            was_sleeped = False
-            if len(recs_part) == 0:
-                logger.debug("Recived 0 records. Finalize")
-                tmp_tab_file.close()
-                logger.debug('temp table closed')
-                write_rec_to_mdb(conn, tmp_tab_name)
-                p_queue.task_done()
-                conn.close()
-                return
-            else:
-                logger.debug("Recived {0} records for save into {1}".format(len(recs_part), fn))
-                write_rec_to_tmp_db(recs_part, tmp_table)
-                record_was_writed = True
-                p_queue.task_done()
-                logger.debug("Steep of task done")
+        #recs_part = None
 
+        queue_msg = p_queue.get()
+        if ProblemDetected:
+            logger.info("Problem was detected earler. Thread do nothing")
+            continue
+        elif queue_msg[0] == 'NO_MORE_REC':
+
+            logger.debug("Recived msg NO_MORE_REC. Finalize")
+            if RowCountOnStart > 0:
+                logger.info ("Analitics: rows before start {0}".format(RowCountOnStart))
+            try:
+                RowCountOnEnd = get_table_rec_count(conn)
+            except Exception as e:
+                RowCountOnEnd = -1
+                logger.warn ("Analitics:Error when tryed calc row count in file {0}: {0}".format(RowCountOnEnd))
+            if RowCountOnEnd > 0:
+                logger.info ("Analitics: rows after finish {0}".format(RowCountOnEnd))
+                logger.info ("Analitics: Total the thread has added {0} rows".format(RowCountOnEnd - RowCountOnStart))
+            p_queue.task_done()
+            conn.close()
+            return
         else:
-            logger.debug("queue is empty")
-            if record_was_writed:
-                logger.debug("temt table is not empty. Will write to mdb")
-                tmp_tab_file.close()
-                write_rec_to_mdb(conn, tmp_tab_name)
-                logger.debug("clear temp table after write into mdb")
-                tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
-                tmp_table =  csv.writer (tmp_tab_file)
-                tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
-                logger.debug("tmp db recreated")
-                record_was_writed = False
-                continue
-            else:
-                logger.debug('sleep')
-                time.sleep(10)
-                was_sleeped = True
+            wasDupl = False
+            logger.info('received info about new part csv file {0} with {1} records'.format(queue_msg[0], queue_msg[1]))
+            logger.info('add data from {0} to mdb part #{1}'.format(queue_msg[0], p_file_index))
+            try:
+               wasDupl = write_to_mdb(conn, queue_msg[0])
+            except Exception as e:
+                logger.error(e)
+                ProblemDetected = True
+            if not wasDupl:  # if not contains problem, delete csv file
+                fn =  os.path.join(TEMP_DIR,  queue_msg[0])
+                logger.debug('delete file {0}'.format(fn))
+                os.remove(fn)
+            p_queue.task_done()
+
+
+
+
 
 
 def csv_file_isCorrect(p_csv_file_name):
@@ -205,49 +295,105 @@ def get_file_index_by_key(p_key):
         if p_key in l:
             return i
 
+def get_row_id(p_csv_rec):
+    return  '_'.join([p_csv_rec[0], p_csv_rec[1], p_csv_rec[2]])
+
 def get_tab_rec(p_csv_rec):
-    res =  ('_'.join([p_csv_rec[0], p_csv_rec[1], p_csv_rec[2]]),) + tuple(f.replace('.', '') for f in p_csv_rec[7:len(p_csv_rec)-1])
+    res =  (get_row_id(p_csv_rec),) + tuple(f.replace('.', '') for f in p_csv_rec[7:len(p_csv_rec)-1])
     return res
 
 
 def process_csv_file(p_csv_file_name):
-    PART_SIZE = 30000
+    PART_SIZE = 20000
     QUEUE_SIZE = 10
     csv_full_name = os.path.join(NEW_DIR, p_csv_file_name)
     max_file_index = len(DICT_OF_KEYS) - 1
     fd = open(csv_full_name, 'r')
     csv_reader = csv.reader(fd)
-    rec_dict = [[] for i in range(max_file_index)]
+    rec_dict = [{} for i in range(max_file_index)]
     queues = [Queue(QUEUE_SIZE) for i in range(max_file_index)]
+    file_index_list = [1 for i in range(max_file_index)]
+
+    row_count  = 0
+    row_w_error  = 0
+    row_count_per_file = [0 for i in range(max_file_index )]
     threads = [Thread(target = access_writer, name = 'thread for file {0}'.format(i+1), args = (p_csv_file_name, i+1, queues[i]), daemon = True) for i in range(max_file_index)]
     for t in threads:
         t.start()
     for rec in csv_reader:
         file_index = get_file_index_by_key(rec[0])
+        row_key   = get_row_id(rec)
         if file_index == None:
             logger.error('Could not define file index for the record. Ignored: {0}'.format(rec))
+            row_w_error += 1
             continue
         if file_index == 0:
             for l in  rec_dict:
-                l.append(get_tab_rec(rec))
+                if row_key not in l:
+                    l[row_key] = get_tab_rec(rec)
+                else:
+                    logger.warn('row with id {0} is duplicated for file #{1}. Ignored'.format(row_key, file_index))
+
+
         else:
-            rec_dict[file_index - 1].append(get_tab_rec(rec))
-            if len(rec_dict[file_index - 1]) == PART_SIZE:
-                logger.debug('Put to queue {0} records for file #{1}'.format(len(rec_dict[file_index - 1]), file_index))
-                queues[file_index - 1].put(rec_dict[file_index - 1])
-                #access_writer(p_csv_file_name, file_index, queues[file_index -1])
-                rec_dict[file_index - 1] = []
-    for i in range(1, max_file_index+1):
-        if len(rec_dict[file_index - 1]) > 0:
-            logger.debug('Put to queue {0} last part of records for file #{1}'.format(len(rec_dict[i - 1]), i))
-            queues[file_index - 1].put(rec_dict[file_index - 1])
-            rec_dict[file_index - 1] = []
+            if row_key in rec_dict[file_index - 1]:
+                logger.warn('row with id "{0}" is duplicated for file #{1}. Ignored'.format(row_key, file_index))
+                continue
+            else:
+                rec_dict[file_index - 1][row_key] = get_tab_rec(rec)
+                if len(rec_dict[file_index - 1]) == PART_SIZE:
+                    tmp_csv_fn = 'tmp_{0}_part_{1}.csv'.format(file_index, file_index_list[file_index - 1])
+                    file_index_list[file_index - 1] += 1
+                    logger.debug('Put records to file {0}  for file #{1}'.format(len(rec_dict[file_index - 1]), file_index))
+                    #write to csv
+                    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_csv_fn )
+                    tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
+                    tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
+                    tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
+                    tmp_table.writerows(rec_dict[file_index - 1].values())
+                    tmp_tab_file.close()
+                    #send to thred info about new file
+
+                    queues[file_index - 1].put([tmp_csv_fn, PART_SIZE])
+                    #access_writer(p_csv_file_name, file_index, queues[file_index -1])
+                    row_count_per_file[file_index - 1] += len(rec_dict[file_index - 1])
+                    rec_dict[file_index - 1] = {}
+        row_count  += 1
+
+    for i in range(max_file_index):
+        if len(rec_dict[i]) > 0:
+            logger.debug('Put to csv {0} last part of records for file #{1}'.format(len(rec_dict[i]), i+1))
+            #write to csv
+            tmp_csv_fn = 'tmp_{0}_part_{1}.csv'.format(i+1, file_index_list[i])
+            file_index_list[i] +=1
+            tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_csv_fn )
+            tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
+            tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
+            tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
+            tmp_table.writerows(rec_dict[i].values())
+            tmp_tab_file.close()
+            # write info to queue
+            logger.debug('write to queue msg:'.format([tmp_csv_fn, len(rec_dict[i])]))
+            queues[i].put([tmp_csv_fn, len(rec_dict[i])])
+
+            row_count_per_file[i] += len(rec_dict[i])
+            rec_dict[i] = {}
 
 
     for i, q in enumerate (queues):
         logger.debug('Put to queue empty list to stop for file #{0}'.format(i+1))
-        q.put([]) # put the empty list for stop thread
+        q.put(['NO_MORE_REC']) # put the empty list for stop thread
         q.join() # wait to stop
+
+    logger.info('-------------------------------------------------------------')
+    logger.info('Analitics: total record processing in file "{0}": {1}'.format(p_csv_file_name, row_count))
+    logger.info('Analitics: Rows with key define error: {0}'.format( row_w_error))
+    for i ,v in  enumerate (row_count_per_file):
+        logger.info('Analitics: send to file {0}: {1}'.format(i + 1, v))
+    logger.info('Analitics: In summary:{0}'.format(sum(row_count_per_file)))
+    #logger.info('Compare with total line in file :{0}'.format(row_count == sum(row_count_per_file)))
+
+
 
 
 
