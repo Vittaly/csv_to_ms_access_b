@@ -306,11 +306,11 @@ def csv_file_isCorrect(p_csv_file_name):
         first_line = f.readline()
     logger.debug('first line of file:{0}'.format(first_line))
     headers  =  first_line.split(',')
-    if len(headers) < 8:
+    if len(headers) < 7:
         logger.error('total count of headers is less then eight')
         return False
-    if '_'.join(headers[0:3]) != "Flop_Turn_Hand":
-        logger.error('Headers of first 3th fields is not "Flop", "Turn" and "Hand"')
+    if '_'.join(headers[0:2]) != "Flop_Hand":
+        logger.error('Headers of first 3th fields is not "Flop" and "Hand"')
         return False
 
     return True
@@ -520,12 +520,9 @@ def main(argv):
             logger.addHandler(hdlr2)
 
             logger.info('Start processing the file {0}'.format(nf))
-
-            process_csv_file(nf)
-
             if csv_file_isCorrect(nf):
 
-
+                process_csv_file(nf)
                 move(os.path.join(NEW_DIR, nf), os.path.join(OLD_DIR, nf))
             else:
                 logger.error('file {0} if bad moving to dir {1}'.format(nf, BAD_DIR))
