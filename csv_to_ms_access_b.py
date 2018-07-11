@@ -3,9 +3,7 @@ __author__ = 'Vitaliy.Burkut'
 
 #################### version history ###########################################
 ################################################################################
-# 0.1 Created       (very slow)
-# 0.2 try with dbf (slow)
-# 0.3 try withh direct csv read from access (fast)
+# 0.1 clone from A version and modyfied
 ################################################################################
 
 ###############################  libs  #########################################
@@ -137,13 +135,20 @@ def merga_data_in_mdb(p_conn):
     p_conn.commit()
 
 
+def put_recorss_to_csv_file(p_file_name, p_records):
+    tmp_file_name =  os.path.join(TEMP_DIR,  p_file_name )
+    tmp_tab_file = open (tmp_file_name, 'w',newline='')
+    tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
+    tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
+    tmp_table.writerows(p_records)
+    tmp_tab_file.close()
 
 
 
 
 
-
-def write_to_mdb(p_conn, p_tmp_tab_name):
+def write_to_mdb(p_conn, p_tmp_tab_name, p_row_count):
+    SMALL_PART_SIZE = 10
 
     cur = p_conn.cursor()
 
@@ -151,29 +156,65 @@ def write_to_mdb(p_conn, p_tmp_tab_name):
 
     ##cmd = 'insert into table1 select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES] where id not in (select id from table1);'.format(p_tmp_tab_name , TEMP_DIR)
     cmd = 'insert into table1 select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name , TEMP_DIR)
-    logger.debug('exeecute:{0}'.format(cmd))
+    logger.debug('try insert {0} rows from the tmp file:{1}'.format(p_row_count, p_tmp_tab_name))
 
     try:
         cur.execute(cmd)
     except pyodbc.IntegrityError as pe:
         if pe.args[0] != '23000':
-            logger.error('Error then was insert into TABLE1: {0}'.format(pe))
+            logger.warn('Error then was insert into TABLE1: {0}'.format(pe))
             raise
         else:
             HasDuplicate = True
-            logger.warn('Found PK duplicated in bulk insert. Try insert by single row')
-            cmd = ' select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name , TEMP_DIR)
-            rows =  cur.execute(cmd).fetchall()
-            for rec in rows:
-                try:
-                    cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', [x for x in rec] + [None for i in range(7 - len(rec))])
-                except  pyodbc.IntegrityError as pe2:
-                    if pe2.args[0] == '23000':
-                        logger.error('Found PK duplicated for ID "{0}". Row ignored'.format(rec[0]))
+            logger.warn('Found PK duplicated in bulk insert. Try insert by small part ({0} rows)'.format(SMALL_PART_SIZE))
+            if p_row_count <= SMALL_PART_SIZE:
+                cmd = ' select *  from [{0}] in "{1}"[Text;FMT=Delimited;HDR=YES];'.format(p_tmp_tab_name , TEMP_DIR)
+                rows =  cur.execute(cmd).fetchall()
+                for rec in rows:
+                    try:
+                        cur.execute('insert into table1 values(?, ?, ?, ?, ?, ?, ?)', [x for x in rec] + [None for i in range(7 - len(rec))])
+                    except  pyodbc.IntegrityError as pe2:
+                        if pe2.args[0] == '23000':
+                            logger.warn('Found PK duplicated for ID "{0}". Row ignored'.format(rec[0]))
+                        else:
+                            p_conn.rollback()
+                            raise
+            else: # if part is big then split it
+                logger.warn('size of part biger then small part size({0}). it will doing split'.format(SMALL_PART_SIZE))
+                fn = os.path.join(TEMP_DIR, p_tmp_tab_name)
+                fn1 = os.path.splitext(p_tmp_tab_name)[0] + '_1.csv'
+                fn2 = os.path.splitext(p_tmp_tab_name)[0] + '_2.csv'
+                logger.warn('split {0}, to {1} and {2}'.format(p_tmp_tab_name, fn1, fn2))
+
+                orig_file  = open(fn, 'r')
+                reader = csv.reader(orig_file)
+                row = next(reader)
+                part_size = p_row_count / 2
+                row_parts = [[],[]]
+                for i, row in enumerate( reader):
+                    if i <= part_size:
+                        row_parts[0].append(row)
                     else:
-                        raise
+                        row_parts[1].append(row)
+                orig_file.close()
+                fn1 = os.path.splitext(p_tmp_tab_name)[0] + '_1.csv'
+                fn2 = os.path.splitext(p_tmp_tab_name)[0] + '_2.csv'
+                put_recorss_to_csv_file(fn1,row_parts[0])
+                put_recorss_to_csv_file(fn2,row_parts[1])
+
+                logger.warn('was builed files {0} ({1} rows) and {2} ({3} rows)'.format(fn1, len(row_parts[0]), fn2, len(row_parts[1])))
+
+                write_to_mdb(p_conn, fn1, len(row_parts[0]))
+                write_to_mdb(p_conn, fn2, len(row_parts[1]))
+
+                fn1f =  os.path.join(TEMP_DIR,  fn1)
+                logger.debug('delete tmp file {0}'.format(fn1f))
+                os.remove(fn1f)
+
+                fn2f =  os.path.join(TEMP_DIR,  fn2)
+                logger.debug('delete tmp file {0}'.format(fn2f))
+                os.remove(fn2f)
     p_conn.commit()
-    return HasDuplicate
 
 
 def write_rec_to_tmp_db(p_records, p_tmp_tab):
@@ -242,14 +283,13 @@ def access_writer(p_csv_file_name, p_file_index, p_queue):
             logger.info('received info about new part csv file {0} with {1} records'.format(queue_msg[0], queue_msg[1]))
             logger.info('add data from {0} to mdb part #{1}'.format(queue_msg[0], p_file_index))
             try:
-               wasDupl = write_to_mdb(conn, queue_msg[0])
+               write_to_mdb(conn, queue_msg[0], queue_msg[1])
             except Exception as e:
                 logger.error(e)
                 ProblemDetected = True
-            if not wasDupl:  # if not contains problem, delete csv file
-                fn =  os.path.join(TEMP_DIR,  queue_msg[0])
-                logger.debug('delete file {0}'.format(fn))
-                os.remove(fn)
+            fn =  os.path.join(TEMP_DIR,  queue_msg[0])
+            logger.debug('delete file {0}'.format(fn))
+            os.remove(fn)
             p_queue.task_done()
 
 
@@ -297,10 +337,10 @@ def get_file_index_by_key(p_key):
             return i
 
 def get_row_id(p_csv_rec):
-    return  '_'.join([p_csv_rec[0], p_csv_rec[1], p_csv_rec[2]])
+    return  '_'.join([p_csv_rec[0], p_csv_rec[1]])
 
 def get_tab_rec(p_csv_rec):
-    res =  (get_row_id(p_csv_rec),) + tuple(f.replace('.', '') for f in p_csv_rec[7:len(p_csv_rec)-1])
+    res =  (get_row_id(p_csv_rec),) + tuple(f.replace('.', '') for f in p_csv_rec[6:len(p_csv_rec)-1])
     return res
 
 
@@ -346,13 +386,13 @@ def process_csv_file(p_csv_file_name):
                     tmp_csv_fn = 'tmp_{0}_part_{1}.csv'.format(file_index, file_index_list[file_index - 1])
                     file_index_list[file_index - 1] += 1
                     logger.debug('Put records to file {0}  for file #{1}'.format(len(rec_dict[file_index - 1]), file_index))
-                    #write to csv
-                    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_csv_fn )
-                    tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
-                    tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
-                    tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
-                    tmp_table.writerows(rec_dict[file_index - 1].values())
-                    tmp_tab_file.close()
+                    put_recorss_to_csv_file(tmp_csv_fn, rec_dict[file_index - 1].values())
+##                    tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_csv_fn )
+##                    tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
+##                    tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
+##                    tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
+##                    tmp_table.writerows(rec_dict[file_index - 1].values())
+##                    tmp_tab_file.close()
                     #send to thred info about new file
 
                     queues[file_index - 1].put([tmp_csv_fn, PART_SIZE])
@@ -367,12 +407,15 @@ def process_csv_file(p_csv_file_name):
             #write to csv
             tmp_csv_fn = 'tmp_{0}_part_{1}.csv'.format(i+1, file_index_list[i])
             file_index_list[i] +=1
-            tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_csv_fn )
-            tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
-            tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
-            tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
-            tmp_table.writerows(rec_dict[i].values())
-            tmp_tab_file.close()
+
+            put_recorss_to_csv_file(tmp_csv_fn, rec_dict[file_index - 1].values())
+
+##            tmp_tab_file_name =  os.path.join(TEMP_DIR,  tmp_csv_fn )
+##            tmp_tab_file = open (tmp_tab_file_name, 'w',newline='')
+##            tmp_table =  csv.writer (tmp_tab_file, quoting=csv.QUOTE_NONNUMERIC)
+##            tmp_table.writerow(['ID', 'Valeur1' , 'Valeur2' , 'Valeur3', 'Valeur4', 'Valeur5', 'Valeur6'])
+##            tmp_table.writerows(rec_dict[i].values())
+##            tmp_tab_file.close()
             # write info to queue
             logger.debug('write to queue msg:'.format([tmp_csv_fn, len(rec_dict[i])]))
             queues[i].put([tmp_csv_fn, len(rec_dict[i])])
@@ -470,13 +513,26 @@ def main(argv):
 
 
         for nf in new_files:
+
+            logFileNameff = os.path.join(BASE_DIR, nf + '.log')
+            hdlr2 = logging.FileHandler(logFileNameff)
+            hdlr2.setFormatter(formatter)
+            logger.addHandler(hdlr2)
+
             logger.info('Start processing the file {0}'.format(nf))
+
+            process_csv_file(nf)
+
             if csv_file_isCorrect(nf):
-                process_csv_file(nf)
+
+
                 move(os.path.join(NEW_DIR, nf), os.path.join(OLD_DIR, nf))
             else:
                 logger.error('file {0} if bad moving to dir {1}'.format(nf, BAD_DIR))
                 move(os.path.join(NEW_DIR, nf), os.path.join(BAD_DIR, nf))
+            logger.info('End processing the file {0}'.format(nf))
+            logger.removeHandler(hdlr2)
+
         logger.info('No more files. Stoping...')
 
 
